@@ -15,3 +15,4 @@ module org.markproject.bills {
     opens org.markproject.bills to javafx.fxml;
     exports org.markproject.bills;
 }
+//java --module-path /Users/romsa/DevKit/JavaSet/javafx-sdk-23.0.2/lib --add-modules javafx.controls,javafx.fxml -jar target/utility-bills-1.0-SNAPSHOT-jar-with-dependencies.jar
