@@ -24,8 +24,22 @@ public class UtilityBillApp extends Application {
 
     @Override
     public void start(Stage primaryStage) {
+        // Вывод переменных среды
+        System.out.println("Environment Variables:");
+        System.getenv().forEach((key, value) -> {
+            System.out.println(key + " = " + value);
+        });
+
+        // Вывод системных свойств (например, рабочая директория)
+        System.out.println("\nSystem Properties:");
+        System.getProperties().forEach((key, value) -> {
+            System.out.println(key + " = " + value);
+        });
+
+        // Подключение к базе данных
         connectDatabase();
 
+        // Создание вкладок
         TabPane tabPane = new TabPane();
         tabPane.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE); // Отключаем закрытие вкладок
 
@@ -40,6 +54,7 @@ public class UtilityBillApp extends Application {
 
         tabPane.getTabs().addAll(tariffsTab, calculationTab, historyTab);
 
+        // Создание сцены
         Scene scene = new Scene(tabPane, 800, 600); // Начальный размер окна
         primaryStage.setScene(scene);
         primaryStage.setTitle("Коммунальные платежи");
@@ -48,6 +63,7 @@ public class UtilityBillApp extends Application {
         primaryStage.setMinWidth(800);
         primaryStage.setMinHeight(600);
 
+        // Отображение окна
         primaryStage.show();
     }
 
