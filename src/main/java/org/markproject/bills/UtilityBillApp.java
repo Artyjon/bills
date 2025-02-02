@@ -13,6 +13,8 @@ import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
 
 import java.io.*;
+import java.net.URISyntaxException;
+import java.net.URL;
 import java.sql.*;
 import java.time.Month;
 import java.util.Comparator;
@@ -20,6 +22,88 @@ import java.util.Optional;
 
 public class UtilityBillApp extends Application {
     private Connection connection;
+
+    private static final String DB_FILE = "utility_bills.sql";
+
+    private String getDatabasePath() {
+        try {
+            // Получаем путь к базе данных в ресурсе .jar
+            URL resource = getClass().getClassLoader().getResource(DB_FILE);
+
+            if (resource != null) {
+                // Если база данных существует как ресурс, копируем её во временную директорию
+                File tempFile = new File(System.getProperty("user.home"), "Library/Application Support/YourAppName/utility_bills.db");
+                if (!tempFile.exists()) {
+                    tempFile.getParentFile().mkdirs(); // Создаем директорию, если не существует
+                    try (InputStream inputStream = resource.openStream();
+                         OutputStream outputStream = new FileOutputStream(tempFile)) {
+                        byte[] buffer = new byte[1024];
+                        int length;
+                        while ((length = inputStream.read(buffer)) != -1) {
+                            outputStream.write(buffer, 0, length);
+                        }
+                    }
+                }
+                return tempFile.getAbsolutePath();
+            } else {
+                // Если база данных не существует, создаем её в рабочей директории
+                String sqlPath = new File(DB_FILE).getAbsolutePath();
+                copyDatabaseFromResources(sqlPath); // Копирование из ресурсов
+                return sqlPath;
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            throw new RuntimeException("Ошибка получения пути к базе данных", e);
+        }
+    }
+
+    private void copyDatabaseFromResources(String sqlPath) throws IOException {
+        // Копирование базы данных из ресурсов, если она не существует
+        File sqlFile = new File(sqlPath);
+        if (!sqlFile.exists()) {
+            try (InputStream sqlStream = getClass().getClassLoader().getResourceAsStream(DB_FILE);
+                 OutputStream out = new FileOutputStream(sqlPath)) {
+                if (sqlStream == null) {
+                    throw new FileNotFoundException("Файл базы данных не найден в ресурсах!");
+                }
+                sqlStream.transferTo(out);
+                System.out.println("Файл базы данных скопирован из ресурсов.");
+            }
+        } else {
+            System.out.println("База данных уже существует, копирование не требуется.");
+        }
+    }
+
+    private void connectDatabase() {
+        try {
+            // Получаем путь к базе данных
+            String sqlPath = getDatabasePath();
+
+            // Подключаемся к базе данных
+            connection = DriverManager.getConnection("jdbc:sqlite:" + sqlPath);
+            System.out.println("База данных успешно подключена.");
+
+            // Создание таблиц, если они не существуют
+            try (Statement stmt = connection.createStatement()) {
+                stmt.execute("CREATE TABLE IF NOT EXISTS Tariffs (" +
+                             "cold REAL, hot REAL, sewer REAL, electricity_day REAL, electricity_night REAL)");
+                stmt.execute("CREATE TABLE IF NOT EXISTS history (" +
+                             "month TEXT PRIMARY KEY, cold_water REAL, hot_water REAL, sewer REAL, " +
+                             "electricity_day REAL, electricity_night REAL, total REAL)");
+                System.out.println("Таблицы успешно созданы.");
+            }
+
+            // Обновление структуры таблицы history (если нужно)
+            updateHistoryTable();
+
+            // Инициализация тарифов по умолчанию
+            initializeDefaultTariffs();
+
+        } catch (SQLException e) {
+            System.err.println("Ошибка при подключении или работе с базой данных:");
+            e.printStackTrace();
+        }
+    }
 
     @Override
     public void start(Stage primaryStage) {
@@ -66,6 +150,84 @@ public class UtilityBillApp extends Application {
         primaryStage.show();
     }
 
+    private void initializeDefaultTariffs() throws SQLException {
+        String query = "SELECT COUNT(*) FROM Tariffs";
+        try (Statement stmt = connection.createStatement();
+             ResultSet rs = stmt.executeQuery(query)) {
+            rs.next();
+            int count = rs.getInt(1);
+
+            if (count == 0) {
+                System.out.println("Тарифы не найдены. Устанавливаются значения по умолчанию.");
+
+                String insertQuery = "INSERT INTO Tariffs (cold, hot, sewer, electricity_day, electricity_night) " +
+                                     "VALUES (30.0, 50.0, 20.0, 4.5, 3.0)";
+
+                try (Statement insertStmt = connection.createStatement()) {
+                    int rowsAffected = insertStmt.executeUpdate(insertQuery);
+                    if (rowsAffected > 0) {
+                        System.out.println("Тарифы по умолчанию установлены.");
+                    } else {
+                        System.err.println("Ошибка при установке тарифов по умолчанию.");
+                    }
+                }
+            } else {
+                System.out.println("Тарифы уже существуют в базе данных.");
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+            System.err.println("Ошибка при инициализации тарифов: " + e.getMessage());
+        }
+    }
+
+    private void calculateBill(ComboBox<Month> month, TextField cold, TextField hot, TextField sewer,
+                               TextField electricityDay, TextField electricityNight, Label result) {
+        try {
+            // Проверяем ввод на корректность
+            double coldValue = parseDouble(cold.getText());
+            double hotValue = parseDouble(hot.getText());
+            double sewerValue = parseDouble(sewer.getText());
+            double electricityDayValue = parseDouble(electricityDay.getText());
+            double electricityNightValue = parseDouble(electricityNight.getText());
+
+            // Получаем тарифы
+            double coldTariff = getTariff("cold");
+            double hotTariff = getTariff("hot");
+            double sewerTariff = getTariff("sewer");
+            double electricityDayTariff = getTariff("electricity_day");
+            double electricityNightTariff = getTariff("electricity_night");
+
+            // Выполняем расчет
+            double total = coldValue * coldTariff +
+                           hotValue * hotTariff +
+                           sewerValue * sewerTariff +
+                           electricityDayValue * electricityDayTariff +
+                           electricityNightValue * electricityNightTariff;
+
+            result.setText("Общая сумма: " + total + " руб.");
+
+            // Сохраняем расчет в историю
+            saveToHistory(month.getValue().toString(), coldValue, hotValue, sewerValue,
+                    electricityDayValue, electricityNightValue, total);
+
+            showAlert("Расчет выполнен успешно!");
+        } catch (NumberFormatException e) {
+            showAlert("Пожалуйста, введите числовые значения для расчета.");
+        } catch (SQLException e) {
+            e.printStackTrace(); // Выводим стек ошибки в консоль
+            showAlert("Ошибка при расчете платежей.");
+        }
+    }
+
+    private double parseDouble(String value) {
+        try {
+            // Заменяем запятую на точку
+            return Double.parseDouble(value.replace(',', '.'));
+        } catch (NumberFormatException e) {
+            throw new NumberFormatException("Неверный формат числа. Используйте точку или запятую как разделитель.");
+        }
+    }
+
     private GridPane createTariffsTab() {
         GridPane grid = new GridPane();
         grid.setPadding(new Insets(10));
@@ -102,26 +264,6 @@ public class UtilityBillApp extends Application {
         grid.add(saveButton, 1, 5);
 
         return grid;
-    }
-
-    private void initializeDefaultTariffs() throws SQLException {
-        String query = "SELECT COUNT(*) FROM Tariffs";
-        try (Statement stmt = connection.createStatement();
-             ResultSet rs = stmt.executeQuery(query)) {
-            rs.next();
-            int count = rs.getInt(1);
-            if (count == 0) {
-                System.out.println("Тарифы не найдены. Устанавливаются значения по умолчанию.");
-                String insertQuery = "INSERT INTO Tariffs (cold, hot, sewer, electricity_day, electricity_night) " +
-                                     "VALUES (30.0, 50.0, 20.0, 4.5, 3.0)";
-                try (Statement insertStmt = connection.createStatement()) {
-                    insertStmt.execute(insertQuery);
-                    System.out.println("Тарифы по умолчанию установлены.");
-                }
-            } else {
-                System.out.println("Тарифы уже существуют в базе данных.");
-            }
-        }
     }
 
     private GridPane createCalculationTab() {
@@ -177,7 +319,7 @@ public class UtilityBillApp extends Application {
         // Колонка "Месяц" с сортировкой по календарному порядку
         TableColumn<HistoryRecord, String> monthColumn = new TableColumn<>("Месяц");
         monthColumn.setCellValueFactory(data -> new SimpleStringProperty(data.getValue().getLocalizedMonth()));
-        monthColumn.setComparator(Comparator.comparingInt(record -> Month.valueOf(record.toUpperCase()).getValue()));
+        monthColumn.setComparator(Comparator.comparingInt(r -> Month.valueOf(r.toUpperCase()).getValue()));
         monthColumn.setPrefWidth(100);
 
         // Остальные колонки
@@ -213,8 +355,8 @@ public class UtilityBillApp extends Application {
 
             {
                 deleteButton.setOnAction(event -> {
-                    HistoryRecord record = getTableView().getItems().get(getIndex());
-                    showDeleteConfirmation(record, tableView);
+                    HistoryRecord r = getTableView().getItems().get(getIndex());
+                    showDeleteConfirmation(r, tableView);
                 });
             }
 
@@ -239,28 +381,32 @@ public class UtilityBillApp extends Application {
         return layout;
     }
 
-    private void showDeleteConfirmation(HistoryRecord record, TableView<HistoryRecord> tableView) {
+    private void showDeleteConfirmation(HistoryRecord r, TableView<HistoryRecord> tableView) {
         Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
         alert.setTitle("Подтверждение удаления");
         alert.setHeaderText("Вы точно хотите удалить запись?");
-        alert.setContentText("Месяц: " + record.getMonth());
+        alert.setContentText("Месяц: " + r.getMonth());
 
         Optional<ButtonType> result = alert.showAndWait();
         if (result.isPresent() && result.get() == ButtonType.OK) {
-            deleteRecordFromDatabase(record);
-            tableView.getItems().remove(record); // Удаляем запись из таблицы
+            deleteRecordFromDatabase(r);
+            tableView.getItems().remove(r); // Удаляем запись из таблицы
         }
     }
 
-    private void deleteRecordFromDatabase(HistoryRecord record) {
-        String dbPath = System.getProperty("user.home") + "/Documents/utility_bills.db";
+    private void deleteRecordFromDatabase(HistoryRecord r) {
+        String sqlPath = getDatabasePath();
         String query = "DELETE FROM history WHERE month = ?";
 
-        try (Connection conn = DriverManager.getConnection("jdbc:sqlite:" + dbPath);
+        try (Connection conn = DriverManager.getConnection("jdbc:sqlite:" + sqlPath);
              PreparedStatement stmt = conn.prepareStatement(query)) {
-            stmt.setString(1, record.getMonth());
-            stmt.executeUpdate();
-            System.out.println("Запись удалена: " + record.getMonth());
+            stmt.setString(1, r.getMonth());
+            int rowsAffected = stmt.executeUpdate();
+            if (rowsAffected > 0) {
+                System.out.println("Запись удалена: " + r.getMonth());
+            } else {
+                System.err.println("Запись с таким месяцем не найдена.");
+            }
         } catch (SQLException e) {
             e.printStackTrace();
             System.err.println("Ошибка удаления записи: " + e.getMessage());
@@ -269,15 +415,15 @@ public class UtilityBillApp extends Application {
 
     private ObservableList<HistoryRecord> loadHistoryData() {
         ObservableList<HistoryRecord> history = FXCollections.observableArrayList();
-        String dbPath = System.getProperty("user.home") + "/Documents/utility_bills.db";
-        File dbFile = new File(dbPath);
+        String sqlPath = getDatabasePath();
+        File sqlFile = new File(sqlPath);
 
-        if (!dbFile.exists()) {
-            System.err.println("Файл базы данных не найден: " + dbPath);
+        if (!sqlFile.exists()) {
+            System.err.println("Файл базы данных не найден: " + sqlPath);
             return history;
         }
 
-        try (Connection conn = DriverManager.getConnection("jdbc:sqlite:" + dbPath);
+        try (Connection conn = DriverManager.getConnection("jdbc:sqlite:" + sqlPath);
              Statement stmt = conn.createStatement();
              ResultSet rs = stmt.executeQuery("SELECT * FROM history ORDER BY strftime('%m', month || '-01') DESC")) {
 
@@ -329,8 +475,12 @@ public class UtilityBillApp extends Application {
             stmt.setDouble(4, electricityDayValue);
             stmt.setDouble(5, electricityNightValue);
 
-            stmt.executeUpdate();
-            showAlert("Тарифы успешно сохранены!");
+            int rowsAffected = stmt.executeUpdate();
+            if (rowsAffected > 0) {
+                showAlert("Тарифы успешно сохранены!");
+            } else {
+                showAlert("Ошибка при сохранении тарифов.");
+            }
         } catch (NumberFormatException e) {
             showAlert("Пожалуйста, введите числовые значения для тарифов.");
         } catch (SQLException e) {
@@ -339,119 +489,35 @@ public class UtilityBillApp extends Application {
         }
     }
 
-    private void calculateBill(ComboBox<Month> month, TextField cold, TextField hot, TextField sewer,
-                               TextField electricityDay, TextField electricityNight, Label result) {
-        try {
-            // Проверяем ввод на корректность
-            double coldValue = parseDouble(cold.getText());
-            double hotValue = parseDouble(hot.getText());
-            double sewerValue = parseDouble(sewer.getText());
-            double electricityDayValue = parseDouble(electricityDay.getText());
-            double electricityNightValue = parseDouble(electricityNight.getText());
-
-            // Получаем тарифы
-            double coldTariff = getTariff("cold");
-            double hotTariff = getTariff("hot");
-            double sewerTariff = getTariff("sewer");
-            double electricityDayTariff = getTariff("electricity_day");
-            double electricityNightTariff = getTariff("electricity_night");
-
-            // Выполняем расчет
-            double total = coldValue * coldTariff +
-                           hotValue * hotTariff +
-                           sewerValue * sewerTariff +
-                           electricityDayValue * electricityDayTariff +
-                           electricityNightValue * electricityNightTariff;
-
-            result.setText("Общая сумма: " + total + " руб.");
-
-            // Сохраняем расчет в историю
-            saveToHistory(month.getValue().toString(), coldValue, hotValue, sewerValue,
-                    electricityDayValue, electricityNightValue, total);
-
-            showAlert("Расчет выполнен успешно!");
-        } catch (NumberFormatException e) {
-            showAlert("Пожалуйста, введите числовые значения для расчета.");
-        } catch (SQLException e) {
-            e.printStackTrace(); // Выводим стек ошибки в консоль
-            showAlert("Ошибка при расчете платежей.");
-        }
-    }
-
-    private double parseDouble(String value) {
-        try {
-            // Заменяем запятую на точку
-            return Double.parseDouble(value.replace(',', '.'));
-        } catch (NumberFormatException e) {
-            throw new NumberFormatException("Неверный формат числа. Используйте точку или запятую как разделитель.");
-        }
-    }
-
     private void saveToHistory(String month, double cold, double hot, double sewer,
                                double electricityDay, double electricityNight, double total) throws SQLException {
-        String sqlInsert = "INSERT OR REPLACE INTO history (month, cold_water, hot_water, sewer, electricity_day, electricity_night, total) " +
-                           "VALUES (?, ?, ?, ?, ?, ?, ?)";
-        try (PreparedStatement stmt = connection.prepareStatement(sqlInsert)) {
-            stmt.setString(1, month);
-            stmt.setDouble(2, cold);
-            stmt.setDouble(3, hot);
-            stmt.setDouble(4, sewer);
-            stmt.setDouble(5, electricityDay);
-            stmt.setDouble(6, electricityNight);
-            stmt.setDouble(7, total);
-            stmt.executeUpdate();
-            System.out.println("Данные успешно сохранены в историю.");
-        }
-    }
+        String sqlUpdate = "UPDATE history SET cold_water = ?, hot_water = ?, sewer = ?, electricity_day = ?, electricity_night = ?, total = ? WHERE month = ?";
+        try (PreparedStatement stmt = connection.prepareStatement(sqlUpdate)) {
+            stmt.setDouble(1, cold);
+            stmt.setDouble(2, hot);
+            stmt.setDouble(3, sewer);
+            stmt.setDouble(4, electricityDay);
+            stmt.setDouble(5, electricityNight);
+            stmt.setDouble(6, total);
+            stmt.setString(7, month);
+            int rowsAffected = stmt.executeUpdate();
 
-    private void showAlert(String message) {
-        Alert alert = new Alert(Alert.AlertType.INFORMATION);
-        alert.setTitle("Информация");
-        alert.setHeaderText(null);
-        alert.setContentText(message);
-        alert.showAndWait();
-    }
-
-    private void connectDatabase() {
-        try {
-            // Определение пути к временному файлу базы данных
-            String dbPath = System.getProperty("user.home") + "/Documents/utility_bills.db";
-            File dbFile = new File(dbPath);
-
-            // Если файл базы данных еще не существует, копируем его из ресурсов
-            if (!dbFile.exists()) {
-                try (InputStream dbStream = getClass().getClassLoader().getResourceAsStream("utility_bills.db");
-                     OutputStream out = new FileOutputStream(dbFile)) {
-                    if (dbStream == null) {
-                        throw new FileNotFoundException("Файл базы данных не найден в ресурсах!");
-                    }
-                    dbStream.transferTo(out);
-                    System.out.println("Файл базы данных скопирован из ресурсов.");
+            if (rowsAffected == 0) { // Если обновление не затронуло строки
+                String sqlInsert = "INSERT INTO history (month, cold_water, hot_water, sewer, electricity_day, electricity_night, total) " +
+                                   "VALUES (?, ?, ?, ?, ?, ?, ?)";
+                try (PreparedStatement insertStmt = connection.prepareStatement(sqlInsert)) {
+                    insertStmt.setString(1, month);
+                    insertStmt.setDouble(2, cold);
+                    insertStmt.setDouble(3, hot);
+                    insertStmt.setDouble(4, sewer);
+                    insertStmt.setDouble(5, electricityDay);
+                    insertStmt.setDouble(6, electricityNight);
+                    insertStmt.setDouble(7, total);
+                    insertStmt.executeUpdate();
                 }
+            } else {
+                System.out.println("Данные успешно обновлены.");
             }
-
-            // Подключение к базе данных
-            connection = DriverManager.getConnection("jdbc:sqlite:" + dbPath);
-            System.out.println("База данных успешно подключена.");
-
-            // Создание таблиц, если они не существуют
-            try (Statement stmt = connection.createStatement()) {
-                stmt.execute("CREATE TABLE IF NOT EXISTS Tariffs (" +
-                             "cold REAL, hot REAL, sewer REAL, electricity_day REAL, electricity_night REAL)");
-                stmt.execute("CREATE TABLE IF NOT EXISTS history (" +
-                             "month TEXT PRIMARY KEY, cold_water REAL, hot_water REAL, sewer REAL, " +
-                             "electricity_day REAL, electricity_night REAL, total REAL)");
-                System.out.println("Таблицы успешно созданы.");
-            }
-
-            // Обновление структуры таблицы history
-            updateHistoryTable();
-
-            // Инициализация тарифов по умолчанию
-            initializeDefaultTariffs();
-        } catch (IOException | SQLException e) {
-            System.err.println("Ошибка подключения к базе данных:");
-            e.printStackTrace();
         }
     }
 
@@ -469,8 +535,6 @@ public class UtilityBillApp extends Application {
         }
     }
 
-
-
     private double getTariff(String type) throws SQLException {
         String query = "SELECT " + type + " FROM Tariffs";
         try (Statement stmt = connection.createStatement();
@@ -484,6 +548,14 @@ public class UtilityBillApp extends Application {
             }
             return tariff;
         }
+    }
+
+    private void showAlert(String message) {
+        Alert alert = new Alert(Alert.AlertType.INFORMATION);
+        alert.setTitle("Информация");
+        alert.setHeaderText(null);
+        alert.setContentText(message);
+        alert.showAndWait();
     }
 
 
