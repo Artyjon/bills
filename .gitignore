@@ -37,3 +37,7 @@ build/
 ### Mac OS ###
 .DS_Store
 /custom-runtime/
+# Игнорировать большие файлы
+out/artifacts/
+custom-runtime/lib/modules
+java -jar /Users/romsa/DevKit/JavaSet/bfg-1.15.0.jar --delete-files "bills.jar"
