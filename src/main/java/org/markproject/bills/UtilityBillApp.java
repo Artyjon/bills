@@ -561,6 +561,9 @@ public class UtilityBillApp extends Application {
 
 
     public static void main(String[] args) {
+        System.setProperty("prism.order", "sw");  // Использование программного рендеринга
+        System.setProperty("prism.verbose", "true");
+
         launch(args);
     }
 }
