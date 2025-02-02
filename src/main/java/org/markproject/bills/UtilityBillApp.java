@@ -74,6 +74,7 @@ public class UtilityBillApp extends Application {
         }
     }
 
+
     private void connectDatabase() {
         try {
             // Получаем путь к базе данных

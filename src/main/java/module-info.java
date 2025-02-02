@@ -15,3 +15,4 @@ module org.markproject.bills {
     opens org.markproject.bills to javafx.fxml;
     exports org.markproject.bills;
 }
+
