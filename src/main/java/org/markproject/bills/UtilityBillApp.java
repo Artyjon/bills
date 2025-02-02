@@ -1,10 +1,7 @@
 package org.markproject.bills;
 
 import javafx.application.Application;
-import javafx.beans.property.DoubleProperty;
-import javafx.beans.property.SimpleDoubleProperty;
 import javafx.beans.property.SimpleStringProperty;
-import javafx.beans.property.StringProperty;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 import javafx.geometry.Insets;
@@ -15,9 +12,11 @@ import javafx.scene.layout.GridPane;
 import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
 
-import java.io.File;
+import java.io.*;
 import java.sql.*;
 import java.time.Month;
+import java.util.Comparator;
+import java.util.Optional;
 
 public class UtilityBillApp extends Application {
     private Connection connection;
@@ -55,7 +54,7 @@ public class UtilityBillApp extends Application {
         tabPane.getTabs().addAll(tariffsTab, calculationTab, historyTab);
 
         // Создание сцены
-        Scene scene = new Scene(tabPane, 800, 600); // Начальный размер окна
+        Scene scene = new Scene(tabPane, 1000, 600); // Начальный размер окна
         primaryStage.setScene(scene);
         primaryStage.setTitle("Коммунальные платежи");
 
@@ -173,14 +172,15 @@ public class UtilityBillApp extends Application {
 
     private Node createHistoryTab() {
         TableView<HistoryRecord> tableView = new TableView<>();
-
-        // Установка стиля для таблицы (размер шрифта)
         tableView.setStyle("-fx-font-size: 14px;");
 
+        // Колонка "Месяц" с сортировкой по календарному порядку
         TableColumn<HistoryRecord, String> monthColumn = new TableColumn<>("Месяц");
-        monthColumn.setCellValueFactory(data -> data.getValue().monthProperty());
-        monthColumn.setPrefWidth(100); // Ширина колонки
+        monthColumn.setCellValueFactory(data -> new SimpleStringProperty(data.getValue().getLocalizedMonth()));
+        monthColumn.setComparator(Comparator.comparingInt(record -> Month.valueOf(record.toUpperCase()).getValue()));
+        monthColumn.setPrefWidth(100);
 
+        // Остальные колонки
         TableColumn<HistoryRecord, Double> coldColumn = new TableColumn<>("ХВС (м³)");
         coldColumn.setCellValueFactory(data -> data.getValue().coldWaterProperty().asObject());
         coldColumn.setPrefWidth(100);
@@ -205,26 +205,82 @@ public class UtilityBillApp extends Application {
         totalColumn.setCellValueFactory(data -> data.getValue().totalProperty().asObject());
         totalColumn.setPrefWidth(100);
 
-        tableView.getColumns().addAll(monthColumn, coldColumn, hotColumn, sewerColumn,
-                electricityDayColumn, electricityNightColumn, totalColumn);
+        // Колонка с кнопкой удаления
+        TableColumn<HistoryRecord, Void> actionColumn = new TableColumn<>("Действие");
+        actionColumn.setPrefWidth(100);
+        actionColumn.setCellFactory(param -> new TableCell<>() {
+            private final Button deleteButton = new Button("Удалить");
 
-        // Автоматическая настройка ширины колонок
-        tableView.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
+            {
+                deleteButton.setOnAction(event -> {
+                    HistoryRecord record = getTableView().getItems().get(getIndex());
+                    showDeleteConfirmation(record, tableView);
+                });
+            }
 
+            @Override
+            protected void updateItem(Void item, boolean empty) {
+                super.updateItem(item, empty);
+                setGraphic(empty ? null : deleteButton);
+            }
+        });
+
+        tableView.getColumns().addAll(
+                monthColumn, coldColumn, hotColumn, sewerColumn,
+                electricityDayColumn, electricityNightColumn, totalColumn, actionColumn
+        );
+
+        // Кнопка "Обновить"
         Button refreshButton = new Button("Обновить");
         refreshButton.setOnAction(e -> tableView.setItems(loadHistoryData()));
 
         VBox layout = new VBox(10, tableView, refreshButton);
-        layout.setPadding(new Insets(10)); // Добавляем отступы для лучшего вида
-
+        layout.setPadding(new Insets(10));
         return layout;
+    }
+
+    private void showDeleteConfirmation(HistoryRecord record, TableView<HistoryRecord> tableView) {
+        Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
+        alert.setTitle("Подтверждение удаления");
+        alert.setHeaderText("Вы точно хотите удалить запись?");
+        alert.setContentText("Месяц: " + record.getMonth());
+
+        Optional<ButtonType> result = alert.showAndWait();
+        if (result.isPresent() && result.get() == ButtonType.OK) {
+            deleteRecordFromDatabase(record);
+            tableView.getItems().remove(record); // Удаляем запись из таблицы
+        }
+    }
+
+    private void deleteRecordFromDatabase(HistoryRecord record) {
+        String dbPath = System.getProperty("user.home") + "/Documents/utility_bills.db";
+        String query = "DELETE FROM history WHERE month = ?";
+
+        try (Connection conn = DriverManager.getConnection("jdbc:sqlite:" + dbPath);
+             PreparedStatement stmt = conn.prepareStatement(query)) {
+            stmt.setString(1, record.getMonth());
+            stmt.executeUpdate();
+            System.out.println("Запись удалена: " + record.getMonth());
+        } catch (SQLException e) {
+            e.printStackTrace();
+            System.err.println("Ошибка удаления записи: " + e.getMessage());
+        }
     }
 
     private ObservableList<HistoryRecord> loadHistoryData() {
         ObservableList<HistoryRecord> history = FXCollections.observableArrayList();
-        try (Connection conn = DriverManager.getConnection("jdbc:sqlite:utility_bills.db");
+        String dbPath = System.getProperty("user.home") + "/Documents/utility_bills.db";
+        File dbFile = new File(dbPath);
+
+        if (!dbFile.exists()) {
+            System.err.println("Файл базы данных не найден: " + dbPath);
+            return history;
+        }
+
+        try (Connection conn = DriverManager.getConnection("jdbc:sqlite:" + dbPath);
              Statement stmt = conn.createStatement();
-             ResultSet rs = stmt.executeQuery("SELECT * FROM history ORDER BY month DESC")) {
+             ResultSet rs = stmt.executeQuery("SELECT * FROM history ORDER BY strftime('%m', month || '-01') DESC")) {
+
             while (rs.next()) {
                 history.add(new HistoryRecord(
                         rs.getString("month"),
@@ -233,13 +289,13 @@ public class UtilityBillApp extends Application {
                         rs.getDouble("sewer"),
                         rs.getDouble("electricity_day"),
                         rs.getDouble("electricity_night"),
-                        rs.getDouble("total") // Загружаем сумму
+                        rs.getDouble("total")
                 ));
             }
             System.out.println("Данные истории успешно загружены.");
         } catch (SQLException e) {
             e.printStackTrace();
-            System.err.println("Ошибка загрузки истории.");
+            System.err.println("Ошибка загрузки истории: " + e.getMessage());
         }
         return history;
     }
@@ -358,8 +414,24 @@ public class UtilityBillApp extends Application {
 
     private void connectDatabase() {
         try {
+            // Определение пути к временному файлу базы данных
+            String dbPath = System.getProperty("user.home") + "/Documents/utility_bills.db";
+            File dbFile = new File(dbPath);
+
+            // Если файл базы данных еще не существует, копируем его из ресурсов
+            if (!dbFile.exists()) {
+                try (InputStream dbStream = getClass().getClassLoader().getResourceAsStream("utility_bills.db");
+                     OutputStream out = new FileOutputStream(dbFile)) {
+                    if (dbStream == null) {
+                        throw new FileNotFoundException("Файл базы данных не найден в ресурсах!");
+                    }
+                    dbStream.transferTo(out);
+                    System.out.println("Файл базы данных скопирован из ресурсов.");
+                }
+            }
+
             // Подключение к базе данных
-            connection = DriverManager.getConnection("jdbc:sqlite:utility_bills.db");
+            connection = DriverManager.getConnection("jdbc:sqlite:" + dbPath);
             System.out.println("База данных успешно подключена.");
 
             // Создание таблиц, если они не существуют
@@ -372,20 +444,12 @@ public class UtilityBillApp extends Application {
                 System.out.println("Таблицы успешно созданы.");
             }
 
-            // Проверка наличия файла базы данных
-            File dbFile = new File("utility_bills.db");
-            if (!dbFile.exists()) {
-                System.out.println("Файл базы данных не найден. Создан новый файл.");
-            } else {
-                System.out.println("Файл базы данных найден.");
-            }
-
             // Обновление структуры таблицы history
             updateHistoryTable();
 
             // Инициализация тарифов по умолчанию
             initializeDefaultTariffs();
-        } catch (SQLException e) {
+        } catch (IOException | SQLException e) {
             System.err.println("Ошибка подключения к базе данных:");
             e.printStackTrace();
         }
@@ -422,54 +486,6 @@ public class UtilityBillApp extends Application {
         }
     }
 
-    public static class HistoryRecord {
-        private final StringProperty month;
-        private final DoubleProperty coldWater;
-        private final DoubleProperty hotWater;
-        private final DoubleProperty sewer;
-        private final DoubleProperty electricityDay;
-        private final DoubleProperty electricityNight;
-        private final DoubleProperty total; // Новое поле
-
-        public HistoryRecord(String month, double coldWater, double hotWater, double sewer,
-                             double electricityDay, double electricityNight, double total) {
-            this.month = new SimpleStringProperty(month);
-            this.coldWater = new SimpleDoubleProperty(coldWater);
-            this.hotWater = new SimpleDoubleProperty(hotWater);
-            this.sewer = new SimpleDoubleProperty(sewer);
-            this.electricityDay = new SimpleDoubleProperty(electricityDay);
-            this.electricityNight = new SimpleDoubleProperty(electricityNight);
-            this.total = new SimpleDoubleProperty(total); // Инициализация нового поля
-        }
-
-        public StringProperty monthProperty() {
-            return month;
-        }
-
-        public DoubleProperty coldWaterProperty() {
-            return coldWater;
-        }
-
-        public DoubleProperty hotWaterProperty() {
-            return hotWater;
-        }
-
-        public DoubleProperty sewerProperty() {
-            return sewer;
-        }
-
-        public DoubleProperty electricityDayProperty() {
-            return electricityDay;
-        }
-
-        public DoubleProperty electricityNightProperty() {
-            return electricityNight;
-        }
-
-        public DoubleProperty totalProperty() { // Новый метод
-            return total;
-        }
-    }
 
     public static void main(String[] args) {
         launch(args);
