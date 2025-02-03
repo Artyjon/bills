@@ -1,0 +1,16 @@
+"C:\...\jdk-23.0.2-full\bin\jpackage" ^
+    --input "C:\...\bills\target" ^
+    --name "Bills" ^
+    --main-jar "utility-bills-1.0-SNAPSHOT-jar-with-dependencies.jar" ^
+    --main-class "org.markproject.bills.UtilityBillApp" ^
+    --type "exe" ^
+    --icon "C:\...\bills\src\main\resources\icon.ico" ^
+    --dest "C:\...\bills\output" ^
+    --runtime-image "C:\...\jdk-23.0.2-full" ^
+    --verbose ^
+    --win-console
+
+
+    WARNING! USE ONLY Liberica Full JDK !!!!
+
+    https://bell-sw.com/pages/downloads/#jdk-23

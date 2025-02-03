@@ -1,0 +1,9 @@
+jpackage \
+  --input /Users/.../.../.../bills/target \
+  --name Bills \
+  --main-jar utility-bills-1.0-SNAPSHOT-jar-with-dependencies.jar \
+  --main-class org.markproject.bills.UtilityBillApp \
+  --type dmg \
+  --icon /Users/.../.../.../bills/src/main/resources/icon.icns \
+  --java-options '--module-path /Users/.../.../.../javafx-sdk-23.0.2/lib --add-modules javafx.controls,javafx.fxml -Dprism.order=sw' \
+  --dest /Users/.../.../.../
